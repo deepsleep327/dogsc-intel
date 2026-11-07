@@ -52,7 +52,11 @@ final class PreviewWallpaperVideoPlayback {
         preparationTask = Task { [weak self] in
             do {
                 guard try await asset.load(.isPlayable) else { return }
-                let tracks = try await asset.loadTracks(withMediaType: .video)
+                // macOS 15 SDK compatibility: box the non-sendable track list.
+                let tracks = try await DogSCSDKCompatibility.loadTracks(
+                    from: asset,
+                    mediaType: .video
+                ).tracks
                 guard let track = tracks.first else { return }
                 let transform = try await track.load(.preferredTransform)
                 let timeRange = try await track.load(.timeRange)

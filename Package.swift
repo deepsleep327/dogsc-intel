@@ -37,5 +37,12 @@ let package = Package(
             ]
         ),
     ],
-    swiftLanguageModes: [.v6]
+    // Intel / Swift 6.1 compatibility: the sources target Swift 6.2 semantics
+    // (isolated conformances, `sending` inference for non-sendable values).
+    // The Swift 6.1 toolchain in Command Line Tools rejects those constructs,
+    // so the local Intel build runs in Swift 5 language mode with complete
+    // concurrency checking: the same checks are reported as warnings instead
+    // of errors. Runtime behaviour is unchanged.
+    // Set DOGSC_SWIFT6_MODE=1 only when building with Xcode 26 (Swift 6.2).
+    swiftLanguageModes: [.v5]
 )

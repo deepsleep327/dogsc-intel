@@ -73,7 +73,35 @@ final class AudioOnlyExportPipeline: @unchecked Sendable {
 
         do {
             try await withTaskCancellationHandler {
-                try await session.export(to: outputURL, as: .m4a)
+                // macOS 15 SDK compatibility: `export(to:as:)` resolves to the
+                // `isolation:` overload that is macOS 15+; gate it and fall
+                // back to the classic asynchronous export on macOS 14.
+                if #available(macOS 15.0, *) {
+                    try await session.export(to: outputURL, as: .m4a)
+                } else {
+                    try await withCheckedThrowingContinuation {
+                        [self] (continuation: CheckedContinuation<Void, Error>) in
+                        self.session.exportAsynchronously {
+                            switch self.session.status {
+                            case .completed:
+                                continuation.resume()
+                            case .cancelled:
+                                continuation.resume(
+                                    throwing: VideoExporterError.cancelled
+                                )
+                            default:
+                                let message = self.session.error?.localizedDescription
+                                    ?? String(
+                                        localized: "导出失败",
+                                        comment: "Generic export failure"
+                                    )
+                                continuation.resume(
+                                    throwing: VideoExporterError.exportFailed(message)
+                                )
+                            }
+                        }
+                    }
+                }
             } onCancel: { [self] in
                 session.cancelExport()
             }

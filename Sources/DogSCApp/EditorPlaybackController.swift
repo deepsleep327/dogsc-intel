@@ -501,11 +501,11 @@ final class EditorPlaybackController: ObservableObject {
                 cameraOutput,
                 initialFrameTime,
                 cameraPreferredTransform
-            )
+            ).image
         } else {
             firstCameraImage = nil
         }
-        let firstScreenImage = await decodedFirstScreen
+        let firstScreenImage = await decodedFirstScreen.image
         guard !Task.isCancelled, installToken == requestedInstall else {
             player.pauseTransport()
             cameraPlayer?.pauseTransport()
@@ -702,7 +702,7 @@ final class EditorPlaybackController: ObservableObject {
                 cameraOutput,
                 CMTime(seconds: target, preferredTimescale: 60_000),
                 bundle.cameraVideoTrack?.preferredTransform ?? .identity
-            )
+            ).image
         } else {
             firstCameraImage = nil
         }
@@ -1184,24 +1184,30 @@ final class EditorPlaybackController: ObservableObject {
     }
 
 
+    /// macOS 15 SDK compatibility: returns a sendable box because the
+    /// `async let` child-task future must be transferable under Swift 6.1.
     private func loadInitialFrame(
         _ output: AVPlayerItemVideoOutput,
         _ itemTime: CMTime,
         _ preferredTransform: CGAffineTransform
-    ) async -> NSImage? {
+    ) async -> DogSCImageBox {
         if let suppliedInitialFrameProvider {
-            return await suppliedInitialFrameProvider(
-                output,
-                itemTime,
-                preferredTransform
+            return DogSCImageBox(
+                image: await suppliedInitialFrameProvider(
+                    output,
+                    itemTime,
+                    preferredTransform
+                )
             )
         }
-        return await Self.waitForInitialFrame(
-            output: output,
-            itemTime: itemTime,
-            preferredTransform: preferredTransform,
-            context: initialFrameContext,
-            outputColorSpace: initialFrameColorProfile?.outputColorSpace
+        return DogSCImageBox(
+            image: await Self.waitForInitialFrame(
+                output: output,
+                itemTime: itemTime,
+                preferredTransform: preferredTransform,
+                context: initialFrameContext,
+                outputColorSpace: initialFrameColorProfile?.outputColorSpace
+            )
         )
     }
 

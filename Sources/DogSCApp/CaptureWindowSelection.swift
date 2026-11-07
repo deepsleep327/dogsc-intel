@@ -18,13 +18,14 @@ struct CaptureWindowInfo: Identifiable, Equatable, Sendable {
 
     @MainActor
     static func available() async throws -> [CaptureWindowInfo] {
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            true,
+        // macOS 15 SDK compatibility: box the non-sendable SCShareableContent.
+        let content = try await DogSCSDKCompatibility.shareableContent(
+            excludingDesktopWindows: true,
             // Full-screen windows live in separate Spaces. Keep their exact
             // identities in the catalog; CGWindowList still restricts hover
             // and clicks to the frontmost visible window under the pointer.
             onScreenWindowsOnly: false
-        )
+        ).content
         let ignoredSystemApplications: Set<String> = [
             "com.apple.dock",
             "com.apple.WindowManager",

@@ -98,13 +98,14 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         // Authorization is completed by the setup permission gate before any
         // selector or recording mask can appear. This path only consumes the
         // permission; it must never raise a second system prompt mid-flow.
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            false,
+        // macOS 15 SDK compatibility: box the non-sendable SCShareableContent.
+        let content = try await DogSCSDKCompatibility.shareableContent(
+            excludingDesktopWindows: false,
             // A confirmed window remains the same recording target when it
             // moves behind another app or to another Space. Resolve its exact
             // identity from the full catalog rather than the visible subset.
             onScreenWindowsOnly: configuration.source != .window
-        )
+        ).content
 
         let filter: SCContentFilter
         let sourceWidth: Int
@@ -183,6 +184,13 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         } else {
             useNativeRecordingOutput = false
         }
+        DiagnosticsTrace.write(
+            "setup source=\(configuration.source.rawValue) "
+                + "codec=\(configuration.captureCodec.rawValue) "
+                + "fps=\(configuration.captureFrameRate.rawValue) "
+                + "systemAudio=\(configuration.recordsSystemAudio) "
+                + "nativeBackend=\(useNativeRecordingOutput)"
+        )
         let streamConfiguration = SCStreamConfiguration()
         let nativeEncodedDimensions = NativeScreenRecordingBackendPolicy.captureDimensions(
             sourceWidth: sourceWidth,
@@ -248,7 +256,9 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         // runtime SCRecordingOutput writes bytes but can leave startCapture()
         // suspended forever when same-stream audio is enabled.
         streamConfiguration.capturesAudio = false
+        DiagnosticsTrace.write("creating SCStream")
         let stream = SCStream(filter: filter, configuration: streamConfiguration, delegate: self)
+        DiagnosticsTrace.write("SCStream created")
 
         var captureOutput: CaptureOutput?
         var nativeFrameMonitor: AnyObject?
@@ -260,15 +270,18 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                 let audioURL = outputURL.deletingLastPathComponent().appendingPathComponent(
                     ".independent-system-audio-\(UUID().uuidString).m4a"
                 )
+                DiagnosticsTrace.write("creating NativeSystemAudioCaptureOutput")
                 nativeSystemAudioOutput = try NativeSystemAudioCaptureOutput(
                     outputURL: audioURL
                 )
+                DiagnosticsTrace.write("creating CoreAudioSystemAudioTap")
                 coreAudioSystemAudioTap = try CoreAudioSystemAudioTap(
                     scope: configuration.systemAudioScope,
                     selectedApplicationBundleIdentifier:
                         configuration.selectedApplicationBundleIdentifier,
                     output: nativeSystemAudioOutput!
                 )
+                DiagnosticsTrace.write("CoreAudioSystemAudioTap created")
             } else {
                 needsScreenCaptureKitAudioFallback = true
             }
@@ -414,9 +427,20 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         // first audible event while waiting for the first video frame.
         if #available(macOS 14.2, *),
            let tap = coreAudioSystemAudioTap as? CoreAudioSystemAudioTap {
+            DiagnosticsTrace.write("audio tap starting")
             try tap.start()
+            DiagnosticsTrace.write("audio tap started")
         }
+        DiagnosticsTrace.write(
+            "stream config \(streamConfiguration.width)x\(streamConfiguration.height) "
+                + "pixelFormat=\(streamConfiguration.pixelFormat) "
+                + "queueDepth=\(streamConfiguration.queueDepth) "
+                + "minFrameInterval=\(streamConfiguration.minimumFrameInterval.seconds) "
+                + "captureResolution=\(streamConfiguration.captureResolution.rawValue)"
+        )
+        DiagnosticsTrace.write("calling startCapture()")
         try await stream.startCapture()
+        DiagnosticsTrace.write("startCapture() returned")
         if useNativeRecordingOutput {
             if #available(macOS 15.0, *),
                let nativeRecordingSegment,
@@ -433,7 +457,14 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                 throw ScreenRecorderError.recordingFailed("苹果原生录制后端不可用")
             }
         } else if let captureOutput {
-            firstFrameStartedAt = try await captureOutput.waitForFirstFrame()
+            DiagnosticsTrace.write("waiting for first frame (legacy writer)")
+            do {
+                firstFrameStartedAt = try await captureOutput.waitForFirstFrame()
+                DiagnosticsTrace.write("first frame arrived")
+            } catch {
+                DiagnosticsTrace.write("waitForFirstFrame threw: \(error)")
+                throw error
+            }
             nativeFirstFrameHostTime = await captureOutput.firstFrameHostTime()
         } else {
             throw ScreenRecorderError.cannotCreateWriter
@@ -562,7 +593,10 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         }
     }
 
-    private func withSurfaceVisibilityGate<T>(
+    // Swift 6.1 compatibility: the Swift 6.2 compiler infers `sending` for the
+    // unconstrained generic result; under 6.1 the transfer check needs the
+    // explicit `Sendable` constraint (every caller returns Void or URL).
+    private func withSurfaceVisibilityGate<T: Sendable>(
         _ operation: () async throws -> T
     ) async rethrows -> T {
         await surfaceVisibilityGate.acquire()
@@ -587,10 +621,11 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
               configuration.source != .device else {
             throw ScreenRecorderError.runNotActive(update.run.runID)
         }
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            false,
+        // macOS 15 SDK compatibility: box the non-sendable SCShareableContent.
+        let content = try await DogSCSDKCompatibility.shareableContent(
+            excludingDesktopWindows: false,
             onScreenWindowsOnly: false
-        )
+        ).content
         try ensureSurfaceUpdateMayApply(update)
         let display = try preferredDisplay(
             from: content.displays,
@@ -1024,6 +1059,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
     }
 
     nonisolated func stream(_ stream: SCStream, didStopWithError error: any Error) {
+        DiagnosticsTrace.write("SCStream didStopWithError: \(error)")
         let streamIdentity = ObjectIdentifier(stream)
         Task { @MainActor [weak self] in
             guard let self,

@@ -406,7 +406,11 @@ extension AppModel {
         guard isNonemptyFile(url) else { return false }
         let asset = AVURLAsset(url: url)
         do {
-            let tracks = try await asset.loadTracks(withMediaType: .video)
+            // macOS 15 SDK compatibility: box the non-sendable track list.
+            let tracks = try await DogSCSDKCompatibility.loadTracks(
+                from: asset,
+                mediaType: .video
+            ).tracks
             let duration = try await asset.load(.duration)
             return !tracks.isEmpty && duration.isNumeric && duration.seconds > 0.01
         } catch {
@@ -416,8 +420,11 @@ extension AppModel {
 
     func displayedVideoSize(at url: URL) async -> CGSize? {
         let asset = AVURLAsset(url: url)
-        guard let tracks = try? await asset.loadTracks(withMediaType: .video),
-              let track = tracks.first,
+        // macOS 15 SDK compatibility: box the non-sendable track list.
+        guard let track = try? await DogSCSDKCompatibility.loadTracks(
+                from: asset,
+                mediaType: .video
+            ).tracks.first,
               let naturalSize = try? await track.load(.naturalSize),
               let preferredTransform = try? await track.load(.preferredTransform)
         else { return nil }

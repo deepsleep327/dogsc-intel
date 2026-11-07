@@ -929,8 +929,9 @@ extension AppModel {
         isCheckingRequiredPermissions = true
         defer { isCheckingRequiredPermissions = false }
         do {
-            _ = try await SCShareableContent.excludingDesktopWindows(
-                false,
+            // macOS 15 SDK compatibility: box the non-sendable result.
+            _ = try await DogSCSDKCompatibility.shareableContent(
+                excludingDesktopWindows: false,
                 onScreenWindowsOnly: true
             )
             hasVerifiedScreenRecordingPermission = true

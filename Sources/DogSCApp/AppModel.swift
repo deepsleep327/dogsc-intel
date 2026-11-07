@@ -638,6 +638,7 @@ final class AppModel: ObservableObject {
                 } catch {
                     guard recordingRuns.isCurrent(run.id) else { return }
                     let startError = error
+                    DiagnosticsTrace.write("prepare FAILED: \(startError)")
                     surfaceVisibilityTask?.cancel()
                     surfaceVisibilityTask = nil
                     recoveryHeartbeatTask?.cancel()

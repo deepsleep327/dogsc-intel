@@ -349,7 +349,11 @@ struct EditorMediaInventories: Equatable, Sendable {
 
 /// Result produced by the asset loader before the session attaches its own
 /// monotonically increasing generation.
-struct EditorPreparedMediaPayload {
+/// macOS 15 SDK compatibility: the payload crosses from the loader task back
+/// to the session; its AVFoundation members are thread-safe to transfer this
+/// way (the asset/track are only read after handoff), matching the upstream
+/// macOS 26 SDK build where these types are sendable.
+struct EditorPreparedMediaPayload: @unchecked Sendable {
     let composition: TimelineCompositionBundle
     let inventories: EditorMediaInventories
     let sourceDisplaySize: CGSize

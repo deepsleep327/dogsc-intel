@@ -479,7 +479,11 @@ private struct RecordingCompletionCard: View {
         let asset = AVURLAsset(url: url)
         do {
             let loadedDuration = try await asset.load(.duration).seconds
-            let track = try await asset.loadTracks(withMediaType: .video).first
+            // macOS 15 SDK compatibility: box the non-sendable track list.
+            let track = try await DogSCSDKCompatibility.loadTracks(
+                from: asset,
+                mediaType: .video
+            ).tracks.first
             if let track {
                 let size = try await track.load(.naturalSize)
                 let transform = try await track.load(.preferredTransform)

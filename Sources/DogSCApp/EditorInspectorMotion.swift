@@ -189,7 +189,18 @@ private struct RollingGlyph: View {
     }
 
     var body: some View {
+        // Swift 6.1 compatibility: typed intermediates avoid ambiguous
+        // operator inference on `-(travel * progress)` inside the result
+        // builder.
         let travel = size * 1.1
+        let previousOffset: CGFloat = -(travel * progress)
+        let shownOffset: CGFloat = travel * (1 - progress)
+        // Swift 6.1 compatibility: typed intermediates keep integer literals
+        // from making `1 - progress * 3` ambiguous inside the result builder.
+        let previousOpacity: CGFloat = max(0, 1 - progress * 3)
+        let previousBlur: CGFloat = 6 * progress
+        let shownOpacity: CGFloat = min(1, progress * 2.4)
+        let shownBlur: CGFloat = 8 * (1 - min(progress, 1))
         // Only the current glyph determines its advance. A transparent old
         // glyph must not keep a wider Chinese character's layout in English.
         glyph(shown).opacity(0)
@@ -197,14 +208,14 @@ private struct RollingGlyph: View {
                 ZStack {
                     if let previous {
                         glyph(previous)
-                            .offset(y: -travel * progress)
-                            .opacity(max(0, 1 - progress * 3))
-                            .blur(radius: 6 * progress)
+                            .offset(y: previousOffset)
+                            .opacity(previousOpacity)
+                            .blur(radius: previousBlur)
                     }
                     glyph(shown)
-                        .offset(y: travel * (1 - progress))
-                        .opacity(min(1, progress * 2.4))
-                        .blur(radius: 8 * (1 - min(progress, 1)))
+                        .offset(y: shownOffset)
+                        .opacity(shownOpacity)
+                        .blur(radius: shownBlur)
                 }
             }
         .onChange(of: character) { old, new in

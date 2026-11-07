@@ -1372,11 +1372,16 @@ final class EditorStore: ObservableObject {
         guard registersUndo, let undoManager else { return }
         let inverse = appliedCommand.inverse
         undoManager.registerUndo(withTarget: self) { store in
-            store.performFromUndo(
-                inverse,
-                actionName: actionName,
-                restoredSelection: selectionBeforeApply
-            )
+            // Swift 6.1 compatibility: the undo callback always runs on the
+            // main thread with UndoManager; re-enter the main actor explicitly
+            // instead of relying on Swift 6.2 closure-isolation inference.
+            MainActor.assumeIsolated {
+                store.performFromUndo(
+                    inverse,
+                    actionName: actionName,
+                    restoredSelection: selectionBeforeApply
+                )
+            }
         }
         undoManager.setActionName(actionName)
     }

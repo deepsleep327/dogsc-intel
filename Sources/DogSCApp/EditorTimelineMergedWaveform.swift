@@ -46,16 +46,21 @@ struct EditorTimelineMergedWaveform: View {
 /// Drawing consumes one immutable draft and the already-decoded peak buffers.
 /// There is no detached sampling task whose stale result can trail a trim,
 /// and no PCM decode or SwiftUI state publication inside the drawing pass.
-private struct WaveformEnvelopeCanvas: View, @MainActor Animatable, @MainActor Equatable {
+// Swift 6.1 compatibility: `@MainActor Animatable, @MainActor Equatable`
+// (isolated conformances) require the Swift 6.2 compiler. Under 6.1 the same
+// isolation split is expressed with nonisolated witnesses over
+// nonisolated(unsafe) stored properties; behaviour is identical because the
+// witnesses only read immutable state and a UI-driven animation scalar.
+private struct WaveformEnvelopeCanvas: View, Animatable, Equatable {
     @State private var envelopeCache = WaveformEnvelopeCache()
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.request == rhs.request && lhs.expansion == rhs.expansion
     }
 
-    let request: WaveformEnvelopeRequest
-    var expansion: CGFloat
-    var animatableData: CGFloat {
+    nonisolated(unsafe) let request: WaveformEnvelopeRequest
+    nonisolated(unsafe) var expansion: CGFloat
+    nonisolated var animatableData: CGFloat {
         get { expansion }
         set { expansion = newValue }
     }

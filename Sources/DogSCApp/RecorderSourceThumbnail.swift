@@ -7,7 +7,11 @@ import ScreenCaptureKit
 enum RecorderSourceThumbnail {
     static func image(displayID: UInt32? = nil, windowID: UInt32? = nil) async -> NSImage? {
         do {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            // macOS 15 SDK compatibility: box the non-sendable result.
+            let content = try await DogSCSDKCompatibility.shareableContent(
+                excludingDesktopWindows: false,
+                onScreenWindowsOnly: true
+            ).content
             try Task.checkCancellation()
             let filter: SCContentFilter
             let size: CGSize

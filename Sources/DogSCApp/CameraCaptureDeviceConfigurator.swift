@@ -70,9 +70,14 @@ enum CameraCaptureDeviceConfigurator {
         to input: AVCaptureDeviceInput,
         device: AVCaptureDevice
     ) throws {
+        // macOS 26 SDK API: only compilable with the Swift 6.2 / Xcode 26
+        // toolchain. Under older SDKs skip it; these two lines are a no-op on
+        // macOS 15 anyway because of the #available(macOS 26.0) runtime gate.
+        #if compiler(>=6.2)
         if #available(macOS 26.0, *), input.isLockedVideoFrameDurationSupported {
             input.activeLockedVideoFrameDuration = .invalid
         }
+        #endif
         try device.lockForConfiguration()
         device.activeVideoMinFrameDuration = .invalid
         device.activeVideoMaxFrameDuration = .invalid

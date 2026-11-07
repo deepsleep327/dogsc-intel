@@ -126,6 +126,8 @@ struct RetainedSampleBuffer: @unchecked Sendable {
 }
 
 final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
+    /// Diagnostics-only frame counter, never read by the capture pipeline.
+    nonisolated(unsafe) private static var screenSamplesSeen = 0
     private static let logger = Logger(
         subsystem: "cn.laogou.dogsc",
         category: "screen-recorder"
@@ -243,6 +245,20 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
         AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
     ]
 
+    /// Intel Mac compatibility: ScreenCaptureKit reports the codecs the current
+    /// GPU can hardware-encode, which is the authoritative capability check for
+    /// this recording path. On Intel machines without HEVC hardware encoding,
+    /// requiring hardware would make HEVC recording fail outright, so the
+    /// caller falls back to the "Enable" (software-permitted) mode.
+    private static func hevcHardwareEncodingIsAvailable() -> Bool {
+        if #available(macOS 15.0, *) {
+            return SCRecordingOutputConfiguration()
+                .availableVideoCodecTypes
+                .contains(.hevc)
+        }
+        return true
+    }
+
     init(
         run: ScreenRecorderRunToken,
         outputURL: URL,
@@ -257,11 +273,13 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
         self.outputURL = outputURL
         self.targetFrameRate = frameRate
         self.onTerminalFailure = onTerminalFailure
+        DiagnosticsTrace.write("CaptureOutput init begin codec=\(codec.rawValue)")
         // ProRes 需要 .mov 容器；H.264 保持 .mp4。
         writer = try AVAssetWriter(
             outputURL: outputURL,
             fileType: codec.usesMOVContainer ? .mov : .mp4
         )
+        DiagnosticsTrace.write("CaptureOutput AVAssetWriter created")
         // 分片间隔 10 秒（原 2 秒）：最小复现实验证明 2 秒短分片会触发
         // MovieHeaderMaker 的 composition-offset 错误（-16341），
         // 10 秒或不分片稳定。fragmented 能力保留（异常退出可恢复，
@@ -322,10 +340,21 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
                 // Keep hardware real-time encoding, but make visual quality a
                 // first-class rate-control constraint instead of hoping that a
                 // high soft bitrate target will be consumed.
-                compression[
-                    kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality
-                        as String
-                ] = false
+                //
+                // macOS 15 compatibility: AVAssetWriterInput rejects
+                // PrioritizeEncodingSpeedOverQuality for both hvc1 and avc1 on
+                // the macOS 15 runtime and raises an Objective-C
+                // NSInvalidArgumentException. Swift cannot catch that
+                // exception, and the recorder was left stuck on
+                // "正在等待首个屏幕帧…" with no frames ever delivered. Only
+                // send the key on runtimes that actually accept it; its `false`
+                // value also matches the encoder's default behaviour.
+                if #available(macOS 26.0, *) {
+                    compression[
+                        kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality
+                            as String
+                    ] = false
+                }
                 if #available(macOS 27.0, *) {
                     // Unlike the older generic Quality hint, CQF is explicitly
                     // defined to maintain consistent visual quality across
@@ -342,13 +371,24 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
             }
             let encoderSpecification: [String: Any]
             if codec == .hevc {
-                // NAT-001/REC-001: never silently fall back to a 5K software
-                // encoder. A missing hardware path must fail visibly instead
-                // of recreating the observed ~23 fps 5K H.264 fallback.
-                encoderSpecification = [
-                    kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder
-                        as String: true,
-                ]
+                if Self.hevcHardwareEncodingIsAvailable() {
+                    // NAT-001/REC-001: never silently fall back to a 5K software
+                    // encoder. A missing hardware path must fail visibly instead
+                    // of recreating the observed ~23 fps 5K H.264 fallback.
+                    encoderSpecification = [
+                        kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder
+                            as String: true,
+                    ]
+                } else {
+                    // Intel Macs without HEVC hardware encoding (older Intel
+                    // integrated GPUs, some AMD models): require a hardware
+                    // encoder would make HEVC recording fail outright, so
+                    // allow the software fallback and keep the feature usable.
+                    encoderSpecification = [
+                        kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder
+                            as String: true,
+                    ]
+                }
             } else {
                 encoderSpecification = [
                     kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder
@@ -398,6 +438,11 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
             + "codec=\(codec.rawValue) "
             + "bitrate=\(bitrate) systemAudio=\(recordsSystemAudio)"
         Self.logger.notice("\(message, privacy: .public)")
+        DiagnosticsTrace.write(
+            "CaptureOutput init url=\(outputURL.lastPathComponent) "
+                + "size=\(width)x\(height) codec=\(codec.rawValue) "
+                + "spec=\(settings[AVVideoEncoderSpecificationKey] ?? "none")"
+        )
     }
 
     func stream(
@@ -408,6 +453,14 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
         guard sampleBuffer.isValid else { return }
         switch outputType {
         case .screen:
+            Self.screenSamplesSeen += 1
+            let seen = Self.screenSamplesSeen
+            if seen <= 3 || seen % 60 == 0 {
+                DiagnosticsTrace.write(
+                    "sample #\(seen) status=\(String(describing: ScreenCaptureFrameMetadata.status(of: sampleBuffer))) "
+                        + "hasImage=\(CMSampleBufferGetImageBuffer(sampleBuffer) != nil)"
+                )
+            }
             guard videoIngress.claim() else { return }
             let receivedAt = Date()
             let retained = RetainedSampleBuffer(value: sampleBuffer)
@@ -440,11 +493,18 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
         // encodable image data; handing one to AVAssetWriter permanently fails
         // the writer with kFigAssetWriterError_NoSampleMediaData.
         guard CMSampleBufferDataIsReady(sampleBuffer),
-              CMSampleBufferGetImageBuffer(sampleBuffer) != nil else { return }
+              CMSampleBufferGetImageBuffer(sampleBuffer) != nil else {
+            DiagnosticsTrace.write("appendVideo dropped: no image buffer")
+            return
+        }
         guard isCompleteScreenFrame(sampleBuffer) else {
-            // 静止内容时 SCK 只交付 idle 状态帧：计数以反映真实交付率
-            // （悬浮窗据此区分“画面静止”与“编码瓶颈”）。
             idleFrameCount += 1
+            if idleFrameCount <= 3 || idleFrameCount % 120 == 0 {
+                DiagnosticsTrace.write(
+                    "appendVideo idle frame #\(idleFrameCount) "
+                        + "status=\(String(describing: ScreenCaptureFrameMetadata.status(of: sampleBuffer)))"
+                )
+            }
             return
         }
         let deliveredWallTimeCandidate = firstFrameWallTime == nil ? receivedAt : nil
@@ -509,11 +569,13 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
             guard writer.startWriting() else {
                 let error = writer.error
                     ?? ScreenRecorderError.recordingFailed("编码器无法开始写入")
+                DiagnosticsTrace.write("writer.startWriting() failed: \(error)")
                 recordTerminalFailure(error, stage: .writerStart)
                 return
             }
             writer.startSession(atSourceTime: presentationTime)
             hasStartedSession = true
+            DiagnosticsTrace.write("writer session started at \(presentationTime.seconds)")
         }
 
         if writer.status == .failed {
